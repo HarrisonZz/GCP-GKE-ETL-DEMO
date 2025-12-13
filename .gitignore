@@ -1,0 +1,65 @@
+# ---- OS / Editor ----
+.DS_Store
+Thumbs.db
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# virtual env
+venv/
+.venv/
+env/
+.env/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- FastAPI / misc runtime ----
+*.log
+
+# ---- Terraform ----
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+.terraform/
+.terraform.lock.hcl
+
+# local override / secret vars
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# 如果你之後有分環境，可以忽略 local override
+*override.tf
+*override.tf.json
+
+# ---- AWS / Credentials（絕對不能進 repo）----
+.aws/
+*.pem
+*.key
+
+# ---- Docker ----
+# build cache / local artifacts，如果有自訂可以加在這裡
+docker-compose.override.yml
+
+# ---- Notebook / tmp ----
+.ipynb_checkpoints/
+tmp/
+temp/
