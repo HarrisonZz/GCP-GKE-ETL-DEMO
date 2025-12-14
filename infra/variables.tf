@@ -12,3 +12,8 @@ variable "aws_region" {
   type    = string
   default = "ap-northeast-1"
 }
+
+variable "ingest_api_user" {
+  type    = string
+  default = "ingest-user"
+}
