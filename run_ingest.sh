@@ -20,7 +20,7 @@ fi
 # 為了避免每次都跑 terraform 指令太慢，您也可以選擇把這些值寫死在 .env 裡
 # 但這裡我們依照您的需求，動態去抓取
 echo "🔍 正在讀取 Terraform Output..."
-TF_DIR="./infra" # ⚠️ 請確認這是您 terraform 檔案所在的資料夾路徑，如果在當前目錄則改為 "."
+TF_DIR="./infra/stacks/eks" # ⚠️ 請確認這是您 terraform 檔案所在的資料夾路徑，如果在當前目錄則改為 "."
 
 if [ ! -d "$TF_DIR" ]; then
     echo "❌ 錯誤：找不到 Terraform 目錄 ($TF_DIR)"
@@ -31,7 +31,7 @@ fi
 pushd $TF_DIR > /dev/null
 AWS_ACCESS_KEY_ID=$(terraform output -raw ingest_api_iam_access_key_id)
 AWS_SECRET_ACCESS_KEY=$(terraform output -raw ingest_api_iam_access_key)
-S3_BUCKET=$(terraform output -raw data_bucket_name) # 假設您的 output 名稱是這個
+S3_BUCKET=$(terraform output -raw data_bucket_name)
 popd > /dev/null
 
 # 檢查是否有抓到值
