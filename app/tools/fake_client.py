@@ -2,12 +2,13 @@ import random
 import time
 from datetime import datetime, timezone
 from typing import List
+import os
 import requests
 from faker import Faker
 fake = Faker()
 
 fake = Faker()
-API_URL = "http://localhost:8000/metrics"
+API_URL = os.getenv("API_URL", "http://localhost:8000/metrics")
 
 DEVICE_IDS: List[str] = [f"dev-{i:03d}" for i in range(1, 51)]  # dev-001 ~ dev-050
 
