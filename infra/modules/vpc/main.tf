@@ -1,108 +1,57 @@
-locals {
-  tags = merge(var.tags, { ManagedBy = "terraform", Component = "vpc" })
+resource "google_project_service" "compute" {
+  service            = "compute.googleapis.com"
+  disable_on_destroy = false
+}
 
-  az_map = {
-    for idx, az in var.azs :
-    az => {
-      public_cidr  = var.public_subnet_cidrs[idx]
-      private_cidr = var.private_subnet_cidrs[idx]
-    }
+# 1. VPC Network
+resource "google_compute_network" "main" {
+  name                            = var.network_name
+  auto_create_subnetworks         = false # 這是關鍵，我們要自定義 Subnet
+  mtu                             = 1460
+  delete_default_routes_on_create = false
+
+  depends_on = [google_project_service.compute]
+}
+
+# 2. Subnet with Secondary Ranges for GKE
+resource "google_compute_subnetwork" "private" {
+  name          = var.subnet_name
+  ip_cidr_range = var.subnet_cidr
+  region        = var.region
+  network       = google_compute_network.main.id
+
+  # 私有 Google Access (GKE Private Cluster 必備)
+  private_ip_google_access = true
+
+  # GKE 專用的次要 IP 範圍
+  secondary_ip_range {
+    range_name    = var.pods_range_name
+    ip_cidr_range = var.pods_cidr
+  }
+
+  secondary_ip_range {
+    range_name    = var.services_range_name
+    ip_cidr_range = var.services_cidr
   }
 }
 
-resource "aws_vpc" "this" {
-  cidr_block           = var.cidr
-  enable_dns_support   = true
-  enable_dns_hostnames = true
-  tags                 = merge(local.tags, { Name = var.name })
+# 3. Cloud Router (為了 NAT)
+resource "google_compute_router" "router" {
+  name    = "${var.network_name}-router"
+  region  = var.region
+  network = google_compute_network.main.id
 }
 
-resource "aws_internet_gateway" "this" {
-  vpc_id = aws_vpc.this.id
-  tags   = merge(local.tags, { Name = "${var.name}-igw" })
-}
+# 4. Cloud NAT (讓私有 Subnet 可以連網際網路，例如 pull docker images)
+resource "google_compute_router_nat" "nat" {
+  name                               = "${var.network_name}-nat"
+  router                             = google_compute_router.router.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "LIST_OF_SUBNETWORKS"
 
-# --- Public subnets (one per AZ) ---
-resource "aws_subnet" "public" {
-  for_each = local.az_map
-
-  vpc_id                  = aws_vpc.this.id
-  availability_zone       = each.key
-  cidr_block              = each.value.public_cidr
-  map_public_ip_on_launch = true
-
-  tags = merge(local.tags, {
-    Name                                        = "${var.name}-public-${each.key}"
-    "kubernetes.io/role/elb"                    = "1"
-    "kubernetes.io/cluster/${var.cluster_name}" = var.cluster_tag_mode
-  })
-}
-
-# --- Private subnets (one per AZ) ---
-resource "aws_subnet" "private" {
-  for_each = local.az_map
-
-  vpc_id            = aws_vpc.this.id
-  availability_zone = each.key
-  cidr_block        = each.value.private_cidr
-
-  tags = merge(local.tags, {
-    Name                                        = "${var.name}-private-${each.key}"
-    "kubernetes.io/role/internal-elb"           = "1"
-    "kubernetes.io/cluster/${var.cluster_name}" = var.cluster_tag_mode
-  })
-}
-
-# --- Public route table ---
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.this.id
-  tags   = merge(local.tags, { Name = "${var.name}-public-rt" })
-}
-
-resource "aws_route" "public_0" {
-  route_table_id         = aws_route_table.public.id
-  destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.this.id
-}
-
-resource "aws_route_table_association" "public_assoc" {
-  for_each       = aws_subnet.public
-  subnet_id      = each.value.id
-  route_table_id = aws_route_table.public.id
-}
-
-# --- NAT GW per AZ (HA 핵심) ---
-resource "aws_eip" "nat" {
-  for_each = aws_subnet.public
-  domain   = "vpc"
-  tags     = merge(local.tags, { Name = "${var.name}-nat-eip-${each.key}" })
-}
-
-resource "aws_nat_gateway" "this" {
-  for_each      = aws_subnet.public
-  allocation_id = aws_eip.nat[each.key].id
-  subnet_id     = each.value.id
-  tags          = merge(local.tags, { Name = "${var.name}-nat-${each.key}" })
-
-  depends_on = [aws_internet_gateway.this]
-}
-
-# --- Private route table per AZ -> same AZ NAT (HA + avoid cross-AZ cost) ---
-resource "aws_route_table" "private" {
-  for_each = aws_subnet.private
-  vpc_id   = aws_vpc.this.id
-  tags     = merge(local.tags, { Name = "${var.name}-private-rt-${each.key}" })
-}
-
-resource "aws_route" "private_0" {
-  for_each               = aws_route_table.private
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.this[each.key].id
-}
-
-resource "aws_route_table_association" "private_assoc" {
-  for_each       = aws_subnet.private
-  subnet_id      = each.value.id
-  route_table_id = aws_route_table.private[each.key].id
+  subnetwork {
+    name                    = google_compute_subnetwork.private.id
+    source_ip_ranges_to_nat = ["ALL_IP_RANGES"]
+  }
 }
