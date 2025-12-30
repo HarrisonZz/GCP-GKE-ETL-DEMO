@@ -1,8 +1,17 @@
-output "cluster_name" { value = aws_eks_cluster.this.name }
-output "cluster_arn" { value = aws_eks_cluster.this.arn }
-output "cluster_endpoint" { value = aws_eks_cluster.this.endpoint }
+output "cluster_name" {
+  value = google_container_cluster.primary.name
+}
 
-output "oidc_provider_arn" { value = aws_iam_openid_connect_provider.this.arn }
-output "oidc_provider_url" { value = aws_iam_openid_connect_provider.this.url }
+output "cluster_endpoint" {
+  value       = google_container_cluster.primary.endpoint
+  description = "GKE Control Plane Endpoint"
+}
 
-output "node_role_arn" { value = aws_iam_role.node.arn }
+output "cluster_ca_certificate" {
+  value       = google_container_cluster.primary.master_auth[0].cluster_ca_certificate
+  description = "Public certificate of the cluster"
+}
+
+output "location" {
+  value = google_container_cluster.primary.location
+}

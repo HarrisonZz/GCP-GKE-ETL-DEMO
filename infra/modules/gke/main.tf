@@ -1,141 +1,111 @@
-locals {
-  tags = merge(var.tags, {
-    ManagedBy = "terraform"
-    Component = "eks"
-  })
+resource "google_project_service" "container" {
+  project = var.project_id
+  service = "container.googleapis.com"
+
+  # 建議設為 false：當你 destroy 這個 module 時，不要順便把 API 關掉
+  disable_on_destroy = false
 }
 
-# --- IAM role for EKS control plane ---
-data "aws_iam_policy_document" "eks_cluster_assume" {
-  statement {
-    effect = "Allow"
-    principals {
-      type        = "Service"
-      identifiers = ["eks.amazonaws.com"]
-    }
-    actions = ["sts:AssumeRole"]
-  }
-}
-
-resource "aws_iam_role" "cluster" {
-  name               = "${var.cluster_name}-cluster-role"
-  assume_role_policy = data.aws_iam_policy_document.eks_cluster_assume.json
-  tags               = local.tags
-}
-
-resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSClusterPolicy" {
-  role       = aws_iam_role.cluster.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "cluster_AmazonEKSVPCResourceController" {
-  role       = aws_iam_role.cluster.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
-}
-
-# --- Security group for EKS control-plane ---
-resource "aws_security_group" "cluster" {
-  name        = "${var.cluster_name}-cluster-sg"
-  description = "EKS cluster security group"
-  vpc_id      = var.vpc_id
-  tags        = local.tags
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
-# --- EKS cluster ---
-resource "aws_eks_cluster" "this" {
+# 1. GKE Cluster (Control Plane)
+resource "google_container_cluster" "primary" {
   name     = var.cluster_name
-  version  = var.cluster_version
-  role_arn = aws_iam_role.cluster.arn
+  location = var.region # 使用 region (如 asia-east1) 而非 zone，代表這是 Regional HA Cluster
 
-  vpc_config {
-    subnet_ids              = var.subnet_ids
-    security_group_ids      = [aws_security_group.cluster.id]
-    endpoint_public_access  = var.endpoint_public_access
-    endpoint_private_access = var.endpoint_private_access
-    public_access_cidrs     = var.public_access_cidrs
+  # 我們會使用自定義的 Node Pool，所以這裡移除預設的
+  remove_default_node_pool = true
+  initial_node_count       = 1
+
+  node_config {
+    disk_size_gb = 30
+    disk_type    = "pd-standard"
+    machine_type = "e2-medium"
+    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 
-  tags = local.tags
+  network    = var.network_name
+  subnetwork = var.subnetwork_name
+
+  # VPC-native 設定 (關鍵：對應 VPC 模組的次要 IP 範圍)
+  ip_allocation_policy {
+    cluster_secondary_range_name  = var.pods_range_name
+    services_secondary_range_name = var.services_range_name
+  }
+
+  # 私有叢集設定 (Nodes 沒有 Public IP，更安全)
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false           # false 代表你還是可以透過 Internet 存取 kubectl (但需要認證)
+    master_ipv4_cidr_block  = "172.16.0.0/28" # Master 節點專用的內部網段，不要跟 VPC 重疊
+  }
+
+  # Workload Identity (讓 Pod 可以安全使用 GCP IAM，類似 AWS IRSA)
+  workload_identity_config {
+    workload_pool = "${var.project_id}.svc.id.goog"
+  }
+
+  # 維護視窗 (建議設定，以免 Google 在你不想要的時間升級)
+  release_channel {
+    channel = "REGULAR"
+  }
+
+  # 確保刪除時不會因為還有資源而被卡住
+  deletion_protection = false
 
   depends_on = [
-    aws_iam_role_policy_attachment.cluster_AmazonEKSClusterPolicy,
-    aws_iam_role_policy_attachment.cluster_AmazonEKSVPCResourceController
+    google_project_service.container
   ]
 }
 
-# --- IAM role for node group ---
-data "aws_iam_policy_document" "eks_node_assume" {
-  statement {
-    effect = "Allow"
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
+# 2. 專用的 Service Account (給 Node 使用，最小權限原則)
+resource "google_service_account" "gke_nodes" {
+  account_id   = "${var.cluster_name}-node-sa"
+  display_name = "GKE Nodes Service Account"
+}
+
+resource "google_project_iam_member" "node_permissions" {
+  for_each = toset([
+    "roles/logging.logWriter",       # 寫入 Log
+    "roles/monitoring.metricWriter", # 寫入監控數據
+    "roles/monitoring.viewer",       # 讀取監控
+    "roles/artifactregistry.reader"  # 拉取 Image (如果用 Artifact Registry)
+  ])
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+  project = var.project_id
+}
+
+# 3. Node Pool (實際跑 Pod 的機器)
+resource "google_container_node_pool" "primary_nodes" {
+  name     = "${var.cluster_name}-node-pool"
+  location = var.region
+  cluster  = google_container_cluster.primary.name
+
+  # Autoscaling 設定
+  autoscaling {
+    min_node_count = var.min_nodes
+    max_node_count = var.max_nodes
+  }
+
+  node_config {
+    preemptible  = var.spot_instance # 是否使用 Spot 機器 (省錢但會被搶走)
+    machine_type = var.machine_type
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
     }
-    actions = ["sts:AssumeRole"]
+
+    service_account = google_service_account.gke_nodes.email
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+
+    # 標籤與 Metadata
+    labels = {
+      env = var.env_name
+    }
+
+    # 硬碟設定
+    disk_size_gb = 50
+    disk_type    = "pd-standard"
   }
-}
-
-resource "aws_iam_role" "node" {
-  name               = "${var.cluster_name}-node-role"
-  assume_role_policy = data.aws_iam_policy_document.eks_node_assume.json
-  tags               = local.tags
-}
-
-resource "aws_iam_role_policy_attachment" "node_AmazonEKSWorkerNodePolicy" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-}
-
-resource "aws_iam_role_policy_attachment" "node_AmazonEKS_CNI_Policy" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
-}
-
-resource "aws_iam_role_policy_attachment" "node_AmazonEC2ContainerRegistryReadOnly" {
-  role       = aws_iam_role.node.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-}
-
-# --- Managed Node Group ---
-resource "aws_eks_node_group" "this" {
-  cluster_name    = aws_eks_cluster.this.name
-  node_group_name = var.node_group_name
-  node_role_arn   = aws_iam_role.node.arn
-  subnet_ids      = var.subnet_ids
-
-  instance_types = var.instance_types
-
-  scaling_config {
-    desired_size = var.desired_size
-    min_size     = var.min_size
-    max_size     = var.max_size
-  }
-
-  tags = local.tags
-
-  depends_on = [
-    aws_iam_role_policy_attachment.node_AmazonEKSWorkerNodePolicy,
-    aws_iam_role_policy_attachment.node_AmazonEKS_CNI_Policy,
-    aws_iam_role_policy_attachment.node_AmazonEC2ContainerRegistryReadOnly
-  ]
-}
-
-# --- OIDC provider for IRSA ---
-# issuer like: https://oidc.eks.<region>.amazonaws.com/id/XXXX
-data "tls_certificate" "oidc" {
-  url = aws_eks_cluster.this.identity[0].oidc[0].issuer
-}
-
-resource "aws_iam_openid_connect_provider" "this" {
-  url             = aws_eks_cluster.this.identity[0].oidc[0].issuer
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.oidc.certificates[0].sha1_fingerprint]
-  tags            = local.tags
 }
