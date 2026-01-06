@@ -1,13 +1,6 @@
-variable "repository_name" {
-  type = string
-}
-
-variable "description" {
-  type    = string
-  default = ""
-}
-
-variable "architectures" {
-  type    = list(string)
-  default = ["x86-64", "ARM64"]
+variable "project_id" {}
+variable "region" {}
+variable "repository_id" {
+  description = "The name of the repository (e.g., etl-images)"
+  type        = string
 }

@@ -1,7 +1,7 @@
-output "repository_uri" {
-  value = aws_ecrpublic_repository.this.repository_uri
+output "repository_url" {
+  value = "${var.region}-docker.pkg.dev/${var.project_id}/${var.repository_id}"
 }
 
-output "registry_id" {
-  value = aws_ecrpublic_repository.this.registry_id
+output "repository_name" {
+  value = google_artifact_registry_repository.repo.name
 }
