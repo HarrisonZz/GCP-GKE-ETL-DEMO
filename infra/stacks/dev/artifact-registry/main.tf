@@ -1,23 +1,23 @@
 terraform {
   required_version = ">= 1.5.0"
-
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
+    google = {
+      source  = "hashicorp/google"
       version = ">= 5.0"
     }
   }
 }
 
-provider "aws" {
-  region = "us-east-1"
+provider "google" {
+  project = var.project_id
+  region  = var.region
 }
 
-module "ecr-public" {
-  source   = "../../modules/ecr-public"
-  for_each = var.repositories
+module "artifact_registry" {
 
-  repository_name = each.key
-  description     = each.value.description
-  architectures   = each.value.architectures
+  source = "../../../modules/artifact-registry"
+
+  project_id    = var.project_id
+  region        = var.region
+  repository_id = var.repository_id
 }

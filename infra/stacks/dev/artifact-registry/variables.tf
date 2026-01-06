@@ -1,11 +1,16 @@
-variable "repositories" {
-  type = map(object({
-    description   = string
-    architectures = list(string)
-  }))
+variable "project_id" {
+  description = "GCP Project ID"
+  type        = string
 }
 
-variable "description" {
-  type    = string
-  default = "ETL related image for demo"
+variable "region" {
+  description = "GCP Region"
+  type        = string
+  default     = "asia-northeast1"
+}
+
+variable "repository_id" {
+  description = "The ID of the repository (e.g., app-images)"
+  type        = string
+  default     = "app-images"
 }

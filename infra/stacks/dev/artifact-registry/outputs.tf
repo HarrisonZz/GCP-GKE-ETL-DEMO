@@ -1,7 +1,9 @@
-output "repository_uris" {
-  value = { for k, m in module.ecr-public : k => m.repository_uri }
+output "repository_url" {
+  description = "The URL of the repository"
+  value       = module.artifact_registry.repository_url
 }
 
-output "registry_ids" {
-  value = { for k, m in module.ecr-public : k => m.registry_id }
+output "repository_name" {
+  description = "The name of the repository"
+  value       = module.artifact_registry.repository_name
 }
