@@ -1,7 +1,7 @@
 # modules/data-platform/outputs.tf
 
 output "gcs_bucket_name" {
-  value = google_storage_bucket.raw_lake.name
+  value = local.raw_bucket_name
 }
 
 output "bq_dataset_id" {

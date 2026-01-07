@@ -17,3 +17,9 @@ variable "region" {
   description = "GCP Region"
   type        = string
 }
+
+variable "prevent_destroy" {
+  type        = bool
+  description = "Whether to prevent destroying critical resources (set true in prod)."
+  default     = false
+}
