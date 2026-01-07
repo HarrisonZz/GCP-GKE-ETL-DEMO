@@ -1,146 +1,133 @@
-import duckdb
-import logging
-from datetime import datetime, timezone
 import os
-from dataclasses import dataclass
-from google.cloud import bigquery # 需要 pip install google-cloud-bigquery
+import sys
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from google.cloud import bigquery
+from google.api_core.exceptions import GoogleAPICallError
 
-# 設定 Logging
-logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-@dataclass
-class ETLConfig:
-    gcs_bucket: str          # 來源 Bucket (GCS)
-    project_id: str          # GCP Project ID
-    dataset_id: str          # BigQuery Dataset
-    table_id: str            # BigQuery Table
-    process_date: str
-    memory_limit: str = "512MB"
-    threads: int = 2
-    temp_dir: str = "/tmp/duckdb_spill"
-
-class DuckDBToBigQueryPipeline:
-    def __init__(self, config: ETLConfig):
-        self.config = config
+# ==========================================
+# 1. 優化後的 Logging 設定
+# ==========================================
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        json_log = {
+            "severity": record.levelname,
+            "message": record.getMessage(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "component": "etl-cleaning-job",
+        }
         
-        # 1. 初始化 DuckDB
-        self.con = duckdb.connect(config={
-            'memory_limit': config.memory_limit,
-            'threads': config.threads,
-            'temp_directory': config.temp_dir
-        })
+        # error_details 處理
+        if record.exc_info:
+            json_log["error_details"] = self.formatException(record.exc_info)
+
+        skip_keys = {
+            'args', 'asctime', 'created', 'exc_info', 'exc_text', 'filename',
+            'funcName', 'levelname', 'levelno', 'lineno', 'module',
+            'msecs', 'message', 'msg', 'name', 'pathname', 'process',
+            'processName', 'relativeCreated', 'stack_info', 'thread', 'threadName'
+        }
         
-        # 2. 初始化 BigQuery Client (GKE 會自動抓權限，不用塞 Key)
-        self.bq_client = bigquery.Client(project=config.project_id)
+        for key, value in record.__dict__.items():
+            if key not in skip_keys and key not in json_log:
+                json_log[key] = value
+
+        return json.dumps(json_log)
+
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+
+# 建議給 Logger 一個名字，避免汙染 root logger，
+# 這樣可以過濾掉 google.cloud 套件本身產生的大量 debug log
+logger = logging.getLogger("etl_job")
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+# ==========================================
+# 2. 主程式邏輯
+# ==========================================
+def run_etl():
+    try:
+        # 環境變數檢查
+        bq_project = os.environ["BQ_PROJECT"]
+        bq_dataset = os.environ["BQ_DATASET"]
+        target = os.environ["BQ_TARGET_TABLE"]
+        ext = os.environ["BQ_EXTERNAL_TABLE"]
         
-        self._setup_gcs_auth()
-
-    def _ensure_temp_dir(self):
-        os.makedirs(self.config.temp_dir, exist_ok=True)
-
-    def _setup_gcs_auth(self):
-        """
-        DuckDB 讀取 GCS 需要 httpfs 擴充。
-        在 GKE 內，通常不需要額外設定 Key，或者使用 HMAC Key 兼容 S3 協議。
-        這裡示範最簡單的：讓 DuckDB 知道我們要讀遠端檔案。
-        """
-        try:
-            self.con.execute("INSTALL httpfs; LOAD httpfs;")
-            # 若在 GKE 且有 Workload Identity，DuckDB 0.10+ 可嘗試直接讀
-            # 但最穩的方式是讓 Python 下載 -> DuckDB 讀 -> 上傳，
-            # 或者設定 GCS HMAC Key (視同 S3)。
-            # 這裡假設環境變數有 GCS HMAC KEY (最通用的跨雲做法)
-            if os.getenv("GCP_ACCESS_KEY_ID"):
-                self.con.execute(f"""
-                    SET s3_region='auto';
-                    SET s3_endpoint='storage.googleapis.com';
-                    SET s3_access_key_id='{os.getenv('GCP_ACCESS_KEY_ID')}';
-                    SET s3_secret_access_key='{os.getenv('GCP_SECRET_ACCESS_KEY')}';
-                """)
-        except Exception as e:
-            logger.error(f"Failed to setup DuckDB GCS extension: {e}")
-            raise
-
-    def run(self):
-        logger.info(f"🚀 Starting ETL: GCS -> DuckDB -> BigQuery for date: {self.config.process_date}")
+        # 【修正】從環境變數讀取 ENV，預設為 dev
+        env_label = os.getenv("ENV", "dev").lower()
         
-        # 1. 定義路徑
-        input_path = f"s3://{self.config.gcs_bucket}/raw/{self.config.process_date}/*.jsonl" # DuckDB 用 s3 protocol 讀 GCS
-        local_staging_file = f"{self.config.temp_dir}/agg_data.parquet"
-
-        # 2. Extract & Transform (DuckDB)
-        # 這裡我們將結果寫入「本地暫存檔」，而不是直接寫回 Cloud Storage
-        query = f"""
-        COPY (
-            SELECT 
-                device_id,
-                '{self.config.process_date}'::DATE AS date,
-                COUNT(*) AS count,
-                ROUND(AVG(value), 2) AS avg_val, -- BigQuery 欄位名避免用 avg 關鍵字
-                MIN(value) AS min_val,
-                MAX(value) AS max_val,
-                now() AS processed_at
-            FROM read_json_auto('{input_path}', format='newline_delimited')
-            WHERE value >= 0 
-            GROUP BY device_id
-            ORDER BY device_id ASC
-        ) TO '{local_staging_file}' (FORMAT 'PARQUET', CODEC 'SNAPPY');
-        """
-
-        try:
-            # Step A: DuckDB 運算並落地
-            logger.info("⏳ [Step 1/2] DuckDB Processing & Staging...")
-            self.con.execute(query)
-            logger.info(f"✅ Staging completed: {local_staging_file}")
-
-            # Step B: Load to BigQuery
-            logger.info("⏳ [Step 2/2] Loading to BigQuery...")
-            self._load_parquet_to_bq(local_staging_file)
-            
-        except Exception as e:
-            logger.error(f"❌ ETL Failed: {e}")
-            raise
-        finally:
-            # 清理暫存檔 (DevOps 好習慣)
-            if os.path.exists(local_staging_file):
-                os.remove(local_staging_file)
-
-    def _load_parquet_to_bq(self, parquet_file: str):
-        """
-        使用 Google 官方 SDK 將 Parquet 上傳到 BigQuery
-        """
-        table_ref = f"{self.config.project_id}.{self.config.dataset_id}.{self.config.table_id}"
+        process_date = os.getenv("PROCESS_DATE") or (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
         
-        job_config = bigquery.LoadJobConfig(
-            source_format=bigquery.SourceFormat.PARQUET,
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND, # 或是 WRITE_TRUNCATE 覆蓋
+        logger.info(f"Starting ETL job", extra={"process_date": process_date, "env": env_label})
+
+        client = bigquery.Client(project=bq_project)
+
+        sql = f"""
+        MERGE `{bq_project}.{bq_dataset}.{target}` T
+        USING (
+          SELECT
+            device_id,
+            DATE(@dt) AS dt,
+            COUNT(1) AS count,
+            ROUND(AVG(value), 2) AS avg_val,
+            MIN(value) AS min_val,
+            MAX(value) AS max_val,
+            CURRENT_TIMESTAMP() AS processed_at
+          FROM `{bq_project}.{bq_dataset}.{ext}`
+          WHERE dt = DATE(@dt) 
+            AND value >= 0 
+          GROUP BY device_id
+        ) S
+        ON T.dt = S.dt AND T.device_id = S.device_id
+        
+        WHEN MATCHED THEN UPDATE SET
+          count = S.count,
+          avg_val = S.avg_val,
+          min_val = S.min_val,
+          max_val = S.max_val,
+          processed_at = S.processed_at
+          
+        WHEN NOT MATCHED THEN
+          INSERT (device_id, dt, count, avg_val, min_val, max_val, processed_at)
+          VALUES (S.device_id, S.dt, S.count, S.avg_val, S.min_val, S.max_val, S.processed_at)
+        """
+
+        # 設定 Job Config
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[bigquery.ScalarQueryParameter("dt", "DATE", process_date)],
+            labels={
+                "job_type": "etl_daily", 
+                "env": env_label, # 【修正】使用變數
+                "component": "etl_cleaner"
+            }
         )
 
-        with open(parquet_file, "rb") as source_file:
-            job = self.bq_client.load_table_from_file(
-                source_file,
-                table_ref,
-                job_config=job_config
-            )
-
-        job.result()  # 等待 Job 完成
+        job = client.query(sql, job_config=job_config)
         
-        # 驗證筆數
-        table = self.bq_client.get_table(table_ref)
-        logger.info(f"✅ Loaded {job.output_rows} rows to {table_ref}. Total rows: {table.num_rows}")
+        # 等待結果
+        result = job.result()
+        
+        # 取得統計資訊
+        total_bytes = job.total_bytes_billed
+        
+        # 【修正】確保這些資訊會出現在 JSON Log 的頂層或 structuredPayload 中
+        logger.info(f"ETL Job Completed successfully", extra={
+            "process_date": process_date,
+            "bytes_billed": total_bytes,
+            "affected_rows": job.num_dml_affected_rows,
+            "job_id": job.job_id
+        })
 
-# --- Entry Point ---
+    except GoogleAPICallError as e:
+        # 這裡的錯誤通常是 SQL 語法錯、權限不足、Quota 不足
+        logger.error(f"BigQuery API failed", exc_info=True)
+        sys.exit(1)
+    except Exception as e:
+        # 這裡捕捉其他 Python 錯誤 (如 key error, network timeout)
+        logger.error(f"Unexpected error", exc_info=True)
+        sys.exit(1)
+
 if __name__ == "__main__":
-    # 環境變數模擬 (實戰中由 Kubernetes ConfigMap/Secret 注入)
-    config = ETLConfig(
-        gcs_bucket=os.getenv("GCS_BUCKET", "my-raw-data-bucket"),
-        project_id=os.getenv("GCP_PROJECT_ID", "my-gcp-project"),
-        dataset_id=os.getenv("BQ_DATASET", "data_platform"),
-        table_id=os.getenv("BQ_TABLE", "device_metrics"),
-        process_date=os.getenv("PROCESS_DATE", datetime.now(timezone.utc).strftime("%Y-%m-%d")),
-        memory_limit=os.getenv("DUCKDB_MEMORY_LIMIT", "512MB")
-    )
-    
-    pipeline = DuckDBToBigQueryPipeline(config)
-    pipeline.run()
+    run_etl()

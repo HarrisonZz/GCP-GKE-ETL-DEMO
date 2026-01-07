@@ -1,6 +1,3 @@
-boto3
+google-cloud-storage
 python-dotenv
-duckdb
-pandas
-boto3
-pyarrow
+google-cloud-bigquery
