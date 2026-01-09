@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: monitoring
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
 spec:
   project: default
   destination:
@@ -20,9 +22,15 @@ spec:
           - $values/k8s/values/monitoring/dev.yaml
 
     # 2) Git repo that hosts values
-    - repoURL: <YOUR_GIT_REPO_URL>
+    - repoURL: https://github.com/HarrisonZz/GCP-GKE-ETL-DEMO
+      path: k8s/values/monitoring
       targetRevision: main
       ref: values
+
+    - repoURL: https://github.com/HarrisonZz/GCP-GKE-ETL-DEMO
+      targetRevision: main
+      # 請確認您的 SecretStore 和 ExternalSecret YAML 確實放在這個路徑下
+      path: k8s/eso
 
   syncPolicy:
     automated:
