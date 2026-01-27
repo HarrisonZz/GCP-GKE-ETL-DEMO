@@ -1,0 +1,17 @@
+provider: cloudflare
+
+# 這裡不直接寫 token，而是用 env 變數去讀 Secret
+env:
+  - name: CF_API_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: cloudflare-api-token # 對應 ExternalSecret target.name
+        key: my-token                     # 對應 ExternalSecret data.secretKey
+
+# 限制範圍，避免誤刪
+domainFilters:
+  - "hrscyj.com"
+
+# 其他重要設定
+txtOwnerId: "gke-cluster" # 識別代碼，避免多個 cluster 打架
+policy: sync # sync=自動新增也自動刪除; upsert-only=只新增不刪除

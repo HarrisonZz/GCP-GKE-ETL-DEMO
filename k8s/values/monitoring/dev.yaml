@@ -1,11 +1,18 @@
 grafana:
+  # 保持 ClusterIP 即可，GKE Ingress (透過 NEG) 可以直接打到 Pod IP
+  service:
+    type: ClusterIP
+    port: 80
+
   ingress:
     enabled: true
-    ingressClassName: nginx
+    ingressClassName: gce # 指定使用 GKE 的 Ingress Controller
+    
     annotations:
-      kubernetes.io/ingress.class: nginx
-      nginx.ingress.kubernetes.io/ssl-redirect: "false"
+      # 這行告訴 GKE 幫你開 Google Cloud Load Balancer
+      kubernetes.io/ingress.class: gce
+
     hosts:
-      - grafana.dev.example.com
-    path: /
-    pathType: Prefix
+      - grafana.example.com  # <--- 修改這裡：您的網域
+
+    path: "/*" # GKE Ingress 通常需要 /* 才能正確比對所有路徑
