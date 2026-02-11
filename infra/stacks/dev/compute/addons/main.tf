@@ -54,17 +54,8 @@ provider "kubernetes" {
 module "k8s_addons" {
   source = "../../../../modules/k8s-addons"
 
-  project_id                      = var.project_id
-  env_name                        = "dev"
-  gcp_service_account_email       = data.terraform_remote_state.compute.outputs.etl_cleaning_gsa_email
-  gcs_bucket_name                 = data.terraform_remote_state.data.outputs.gcs_bucket_name
-  monitoring_secrets_gcp_sa_email = module.monitoring_identity.gsa_email
-  external_secrets_gcp_sa_email   = module.external_secrets_identity.gsa_email
-
-  depends_on = [
-    module.external_secrets_identity,
-    module.monitoring_identity
-  ]
+  project_id = var.project_id
+  env_name   = "dev"
 }
 
 # External Secrets Operator Workload Identity
@@ -101,4 +92,37 @@ module "monitoring_identity" {
   ]
 
   depends_on = [module.k8s_addons]
+}
+
+# --- Service Accounts for Workload Identity Binding ---
+# These are created AFTER the Workload Identity modules to avoid circular dependencies
+
+# External Secrets Operator Service Account
+resource "kubernetes_service_account_v1" "external_secrets_sa" {
+  metadata {
+    name      = "external-secrets-sa"
+    namespace = "external-secrets"
+    annotations = {
+      "iam.gke.io/gcp-service-account" = module.external_secrets_identity.gsa_email
+    }
+  }
+  depends_on = [
+    module.k8s_addons,
+    module.external_secrets_identity
+  ]
+}
+
+# Monitoring Service Account
+resource "kubernetes_service_account_v1" "monitoring_secrets_sa" {
+  metadata {
+    name      = "monitoring-secrets-sa"
+    namespace = "monitoring"
+    annotations = {
+      "iam.gke.io/gcp-service-account" = module.monitoring_identity.gsa_email
+    }
+  }
+  depends_on = [
+    module.k8s_addons,
+    module.monitoring_identity
+  ]
 }
