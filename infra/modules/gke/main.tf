@@ -15,8 +15,8 @@ resource "google_container_cluster" "primary" {
   remove_default_node_pool = true
   initial_node_count       = 1
 
-  network    = var.network_name
-  subnetwork = var.subnetwork_name
+  network    = var.network_self_link
+  subnetwork = var.subnetwork_self_link
 
   # VPC-native 設定 (關鍵：對應 VPC 模組的次要 IP 範圍)
   ip_allocation_policy {

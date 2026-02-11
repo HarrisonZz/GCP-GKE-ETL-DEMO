@@ -34,8 +34,8 @@ module "gke" {
 
   cluster_name = var.cluster_name
 
-  network_name    = data.terraform_remote_state.vpc.outputs.network_name
-  subnetwork_name = data.terraform_remote_state.vpc.outputs.subnetwork_name
+  network_self_link    = data.terraform_remote_state.vpc.outputs.network_self_link
+  subnetwork_self_link = data.terraform_remote_state.vpc.outputs.subnetwork_self_link
 
   pods_range_name     = data.terraform_remote_state.vpc.outputs.pods_range_name
   services_range_name = data.terraform_remote_state.vpc.outputs.services_range_name

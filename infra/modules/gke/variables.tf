@@ -7,13 +7,13 @@ variable "cluster_name" {
   type        = string
 }
 
-variable "network_name" {
-  description = "VPC Network Name"
+variable "network_self_link" {
+  description = "VPC Network Self-Link (full resource path)"
   type        = string
 }
 
-variable "subnetwork_name" {
-  description = "Subnet Name"
+variable "subnetwork_self_link" {
+  description = "Subnet Self-Link (full resource path)"
   type        = string
 }
 
