@@ -21,7 +21,3 @@ output "pods_range_name" {
 output "services_range_name" {
   value = var.services_range_name
 }
-
-output "project_id" {
-  value = var.project_id
-}
