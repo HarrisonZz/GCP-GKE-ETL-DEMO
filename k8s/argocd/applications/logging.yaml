@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: logging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: platform
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: logging
+  
+  sources:
+    # 1) Helm chart source - using loki-stack as a placeholder
+    - repoURL: https://grafana.github.io/helm-charts
+      chart: loki-stack
+      targetRevision: 2.10.2
+      helm:
+        valueFiles:
+          - $values/k8s/values/logging/dev.yaml
+
+    # 2) Git repo that hosts values
+    - repoURL: https://github.com/HarrisonZz/GCP-GKE-ETL-DEMO.git
+      path: k8s/values/logging
+      targetRevision: main
+      ref: values
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
