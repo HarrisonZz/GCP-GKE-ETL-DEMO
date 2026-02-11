@@ -86,28 +86,3 @@ resource "helm_release" "external_secrets" {
     installCRDs = true
   })]
 }
-
-# --- 5. Service Accounts for Workload Identity ---
-# External Secrets Operator Service Account
-resource "kubernetes_service_account_v1" "external_secrets_sa" {
-  metadata {
-    name      = "external-secrets-sa"
-    namespace = kubernetes_namespace_v1.namespaces["external-secrets"].metadata[0].name
-    annotations = {
-      "iam.gke.io/gcp-service-account" = var.external_secrets_gcp_sa_email
-    }
-  }
-  depends_on = [helm_release.external_secrets]
-}
-
-# Monitoring Service Account
-resource "kubernetes_service_account_v1" "monitoring_secrets_sa" {
-  metadata {
-    name      = "monitoring-secrets-sa"
-    namespace = kubernetes_namespace_v1.namespaces["monitoring"].metadata[0].name
-    annotations = {
-      "iam.gke.io/gcp-service-account" = var.monitoring_secrets_gcp_sa_email
-    }
-  }
-  depends_on = [helm_release.external_secrets]
-}
