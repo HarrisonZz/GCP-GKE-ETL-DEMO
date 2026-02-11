@@ -17,7 +17,7 @@ spec:
           - $values/k8s/values/airflow/base.yaml
           - $values/k8s/values/airflow/dev.yaml
           - $values/k8s/env/dev/airflow.auto-values.yaml   # ← Terraform handoff
-    - repoURL: https://github.com/<you>/<repo>.git
+    - repoURL: https://github.com/HarrisonZz/GCP-GKE-ETL-DEMO.git
       targetRevision: main
       ref: values
   syncPolicy:
